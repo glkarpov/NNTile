@@ -13,6 +13,7 @@ import inspect
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from configuration_gpt_neo import GPTNeoConfig
 
 
 class LayerNorm(nn.Module):
@@ -28,6 +29,7 @@ class LayerNorm(nn.Module):
 
 
 class CausalSelfAttention(nn.Module):
+
     def __init__(self, config, attention_type):
         super().__init__()
         assert config.n_embd % config.n_head == 0
@@ -46,7 +48,8 @@ class CausalSelfAttention(nn.Module):
         
         print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
         # causal mask to ensure that attention is only applied to the left in the input sequence
-        bias = torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size)
+        bias = torch.tril(torch.ones((config.block_size, config.block_size), 
+                                     dtype=bool)).view(1, 1, config.block_size, config.block_size)
 
         # local causal self attention is a sliding window where each token can only attend to the previous
         # window_size tokens. This is implemented by updating the causal mask such that for each token
@@ -81,6 +84,7 @@ class CausalSelfAttention(nn.Module):
 
 
 class NeoFlashAttention(CausalSelfAttention):
+
     def __init__():
         super().__init__()
 
@@ -92,6 +96,7 @@ GPT_NEO_ATTENTION_CLASSES = {
 
 
 class GPTNeoAttention(nn.Module):
+
     def __init__(self, config, layer_id=0):
         super().__init__()
         self.layer_id = layer_id
@@ -142,50 +147,6 @@ class GPTNeoBlock(nn.Module):
         return x
 
 
-class GPTNeoConfig:
-    def __init__(
-        self,
-        block_size = 1024,
-        window_size = 256,
-        vocab_size = 50304, # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
-        n_layer = 12,
-        attention_types = [["global", "local"], 6],
-        n_head = 12,
-        n_embd = 768,
-        dropout = 0.0,
-        bias = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    ):
-        self.block_size = block_size
-        self.window_size = window_size
-        self.vocab_size = vocab_size
-        self.n_layer = n_layer
-        self.n_head = n_head
-        self.n_embd = n_embd
-        self.dropout = dropout
-        self.bias = bias
-
-        self.attention_types = attention_types
-        self.attention_layers = self.expand_attention_types_params(attention_types)
-
-        if len(self.attention_layers) != self.num_layers:
-            raise ValueError(
-                "Configuration for convolutional module is incorrect. "
-                "It is required that `len(config.attention_layers)` == `config.num_layers` "
-                f"but is `len(config.attention_layers) = {len(self.attention_layers)}`, "
-                f"`config.num_layers = {self.num_layers}`. "
-                "`config.attention_layers` is prepared using `config.attention_types`. "
-                "Please verify the value of `config.attention_types` argument."
-            )
-
-    @staticmethod
-    def expand_attention_types_params(attention_types):
-        attentions = []
-        for item in attention_types:
-            for _ in range(item[1]):
-                attentions.extend(item[0])
-        return attentions
-
-
 class GPT(nn.Module):
 
     def __init__(self, config):
@@ -198,7 +159,7 @@ class GPT(nn.Module):
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([GPTNeoBlock(config, layer_id=i) for i in range(config.n_layer)]),
+            h = nn.ModuleList([GPTNeoBlock(config, layer_id=i) for i in range(config.num_layers)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -213,7 +174,7 @@ class GPT(nn.Module):
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
             if pn.endswith('c_proj.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
+                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.num_layers))
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
